@@ -123,6 +123,7 @@ static const char *edit_message, *use_message;
 static char *fixup_message, *fixup_commit, *squash_message;
 static const char *fixup_prefix;
 static int all, also, interactive, patch_interactive, only, amend, signoff;
+static int include_untracked;
 static struct add_p_opt add_p_opt = ADD_P_OPT_INIT;
 static int edit_flag = -1; /* unspecified */
 static int quiet, verbose, no_verify, allow_empty, dry_run, renew_authorship;
@@ -450,23 +451,58 @@ static const char *prepare_index(const char **argv, const char *prefix,
 	 * (A) if all goes well, commit the real index;
 	 * (B) on failure, rollback the real index.
 	 */
-	if (all || (also && pathspec.nr)) {
+
+	// CONDITION D'ENTRÉE : Exécute ce bloc si une de ces options est activée :
+	// - all (-a) : commiter tous les fichiers modifiés
+	// - also (--include) ET pathspec.nr > 0 : fichiers spécifiés avec --include
+	// - include_untracked : NOUVELLE OPTION --include-untracked
+	if (all || (also && pathspec.nr) || include_untracked) {
+
+		// PRÉPARATION : Allouer mémoire pour tracer les fichiers traités
 		char *ps_matched = xcalloc(pathspec.nr, 1);
-		repo_hold_locked_index(the_repository, &index_lock,
-				       LOCK_DIE_ON_ERROR);
-		add_files_to_cache(the_repository, also ? prefix : NULL,
-				   &pathspec, ps_matched, 0, 0);
-		if (!all && report_path_error(ps_matched, &pathspec))
+
+		// VERROUILLAGE : Bloquer l'index Git pour éviter conflits avec autres opérations Git
+		repo_hold_locked_index(the_repository, &index_lock, LOCK_DIE_ON_ERROR);
+
+		// TRAITEMENT DES FICHIERS EXISTANTS (logique Git originale)
+		// Si option -a ou --include avec fichiers spécifiés
+		if (all || (also && pathspec.nr)) {
+			// Ajouter fichiers modifiés/spécifiés à l'index Git
+			add_files_to_cache(the_repository, also ? prefix : NULL,
+			&pathspec, ps_matched, 0, 0);
+		}
+
+		// IMPLEMENTATION DE LA LOGIQUE : Traitement des fichiers untracked
+		if (include_untracked) {
+			// Créer une structure pathspec manuelle pour "." (dossier courant)
+			struct pathspec ps;
+			memset(&ps, 0, sizeof(ps));           // Initialiser à zéro
+			ps.nr = 1;                            // 1 élément
+			ps.items = xcalloc(1, sizeof(struct pathspec_item)); // Allouer mémoire
+			ps.items[0].match = ".";              // Chercher dans "."
+			ps.items[0].len = 1;                  // Longueur de "."
+			ps.items[0].original = ".";           // Valeur originale
+
+			// TODO TENTATIVE d'ajout des fichiers untracked (PROBLÈME ICI)
+			add_files_to_cache(the_repository, prefix, &ps, NULL, 0, 0);
+
+			free(ps.items);                       // Libérer mémoire allouée
+		}
+
+		// VÉRIFICATION D'ERREURS (modifiée pour votre cas)
+		if (!all && !include_untracked && report_path_error(ps_matched, &pathspec))
 			exit(128);
 
-		refresh_cache_or_die(refresh_flags);
-		cache_tree_update(the_repository->index, WRITE_TREE_SILENT);
-		if (write_locked_index(the_repository->index, &index_lock, 0))
+		// FINALISATION : Étapes standard Git
+		refresh_cache_or_die(refresh_flags);                    // Rafraîchir l'index
+		cache_tree_update(the_repository->index, WRITE_TREE_SILENT); // Mettre à jour l'arbre
+		if (write_locked_index(the_repository->index, &index_lock, 0))  // Écrire l'index
 			die(_("unable to write new index file"));
-		commit_style = COMMIT_NORMAL;
-		ret = get_lock_file_path(&index_lock);
-		free(ps_matched);
-		goto out;
+
+		commit_style = COMMIT_NORMAL;              // Style de commit normal
+		ret = get_lock_file_path(&index_lock);     // Retourner le chemin de l'index
+		free(ps_matched);                          // Libérer mémoire
+		goto out;                                  // Aller au label "out:"
 	}
 
 	/*
@@ -1735,6 +1771,7 @@ int cmd_commit(int argc,
 
 		OPT_GROUP(N_("Commit contents options")),
 		OPT_BOOL('a', "all", &all, N_("commit all changed files")),
+		OPT_BOOL(0, "include-untracked", &include_untracked, N_("commit untracked files")),
 		OPT_BOOL('i', "include", &also, N_("add specified files to index for commit")),
 		OPT_BOOL(0, "interactive", &interactive, N_("interactively add files")),
 		OPT_BOOL('p', "patch", &patch_interactive, N_("interactively add changes")),
